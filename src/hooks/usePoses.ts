@@ -8,7 +8,7 @@ export async function getObjectsIndex(
   metadata: VideoMetadata
 ): Promise<string[]> {
   const response = await fetch(
-    `https://openreal2sim.s3.us-west-2.amazonaws.com/${metadata.week}/${metadata.author}/${video}/reconstruction/objects/index.json`
+    `https://openreal2sim-sam.s3.us-west-2.amazonaws.com/${metadata.week}/${metadata.author}/${video}/reconstruction/objects/index.json`
   );
   if (!response.ok) {
     throw new Error("Failed to fetch objects index");
@@ -33,7 +33,7 @@ function buildPoseUrl(
   video: string,
   metadata: VideoMetadata
 ): string {
-  return `https://openreal2sim.s3.us-west-2.amazonaws.com/${metadata.week}/${metadata.author}/${video}/reconstruction/objects/${name}`;
+  return `https://openreal2sim-sam.s3.us-west-2.amazonaws.com/${metadata.week}/${metadata.author}/${video}/reconstruction/objects/${name}`;
 }
 
 export function usePoses(video?: string) {

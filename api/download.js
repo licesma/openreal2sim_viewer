@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     console.log("[download] Looking up video:", video);
 
     // 1. Firestore
-    const snap = await firestore.doc("reconstructions/metadata").get();
+    const snap = await firestore.doc("reconstructions/sam").get();
     const meta = snap.data()[video];
     if (meta === undefined) {
       res.status(404).setHeader("Content-Type", "text/plain");
@@ -36,7 +36,7 @@ export default async function handler(req, res) {
     console.log("[download] Listing S3 prefix:", prefix);
     const list = await s3.send(
       new ListObjectsV2Command({
-        Bucket: "openreal2sim",
+        Bucket: "openreal2sim-sam",
         Prefix: prefix,
       })
     );
@@ -68,7 +68,7 @@ export default async function handler(req, res) {
 
       const s3Obj = await s3.send(
         new GetObjectCommand({
-          Bucket: "openreal2sim",
+          Bucket: "openreal2sim-sam",
           Key: key,
         })
       );

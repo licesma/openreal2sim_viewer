@@ -1,5 +1,4 @@
 export const FIREBASE_COLLECTION = "reconstructions";
-export const HUNYUAN_DOCUMENT = "metadata";
 export const SAM_DOCUMENT = "sam";
 
 // Colors

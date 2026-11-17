@@ -1,9 +1,6 @@
 import type { FC } from "react";
-import { Label } from "./ui/label";
 import { Link, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
-import { useObjectModel } from "@/providers/ObjectModelProvider";
 import { Filter } from "lucide-react";
 import { DARK_BLUE } from "@/constants";
 
@@ -40,13 +37,11 @@ export const ControlBar: FC<ControlBarProps> = ({
   showFilters,
   onToggleFilters,
 }) => {
-  const { model, setModel } = useObjectModel();
-  const isSam = model === "sam";
   const location = useLocation();
 
   const isStats = location.pathname === "/stats";
-  // Evaluator is active for "/" and any video route (not stats, sam_compare, or manual_metadata)
-  const isEvaluator = !["/stats", "/sam_compare", "/manual_metadata"].includes(
+  // Evaluator is active for "/" and any video route (not stats or manual_metadata)
+  const isEvaluator = !["/stats", "/manual_metadata"].includes(
     location.pathname,
   );
 
@@ -67,23 +62,6 @@ export const ControlBar: FC<ControlBarProps> = ({
           <NavItem to="/" label="Evaluator" isActive={isEvaluator} />
           <NavItem to="/stats" label="Stats" isActive={isStats} />
         </nav>
-      </div>
-
-      <div className="flex items-center gap-2 mr-4">
-        <Label
-          className={`text-sm ${isSam ? "text-gray-400" : "font-semibold"}`}
-        >
-          Hunyuan
-        </Label>
-        <Switch
-          checked={isSam}
-          onCheckedChange={(checked) => setModel(checked ? "sam" : "hunyuan")}
-        />
-        <Label
-          className={`text-sm ${!isSam ? "text-gray-400" : "font-semibold"}`}
-        >
-          Sam
-        </Label>
       </div>
     </div>
   );

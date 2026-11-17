@@ -108,7 +108,7 @@ const UsersGrid = (props: UserGridProps) => {
       <div className="shrink-0 rounded-lg overflow-hidden">
        { selectedVideo && metadata ?  (<img
           src={
-               `https://openreal2sim.s3.us-west-2.amazonaws.com/${metadata.week}/${metadata.author}/${selectedVideo}/source/000000.jpg`
+               `https://openreal2sim-sam.s3.us-west-2.amazonaws.com/${metadata.week}/${metadata.author}/${selectedVideo}/source/000000.jpg`
 
           }
           alt="Frame from selected video"

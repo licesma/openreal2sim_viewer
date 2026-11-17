@@ -3,18 +3,15 @@ import { doc, getDoc, updateDoc, deleteField } from "firebase/firestore";
 import { useFirestore } from "@/providers/FirestoreProvider";
 import type { VideoMetadata } from "@/types/VideoMetadata";
 import { toast } from "sonner";
-import { FIREBASE_COLLECTION, HUNYUAN_DOCUMENT, SAM_DOCUMENT } from "@/constants";
-import { useObjectModel } from "@/providers/ObjectModelProvider";
+import { FIREBASE_COLLECTION, SAM_DOCUMENT } from "@/constants";
 
 export const KEY = "reconstructions";
 
 export function useMetadata() {
   const db = useFirestore();
   const queryClient = useQueryClient();
-  const { model } = useObjectModel();
-  const documentId = model === "sam" ? SAM_DOCUMENT : HUNYUAN_DOCUMENT;
-  const docRef = doc(db, FIREBASE_COLLECTION, documentId);
-  const queryKey = [KEY, model];
+  const docRef = doc(db, FIREBASE_COLLECTION, SAM_DOCUMENT);
+  const queryKey = [KEY];
 
   const query = useQuery<Record<string, VideoMetadata>>({
     queryKey,
