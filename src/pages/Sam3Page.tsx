@@ -5,7 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 
 const BUCKET_URL = "https://openreal2sim-sam.s3.us-west-2.amazonaws.com/";
-const DINO_URL = `${BUCKET_URL}auto_seg_1k/dino.json`;
+const DINO_URL = `${BUCKET_URL}auto_seg_1k/dino2.json`;
+const FRAMES_PREFIX = "auto_seg_1k/dino2_frames/";
 const REFETCH_MS = 60_000;
 const GALLERY_CAP = 200;
 const THRESHOLD_MIN = 0.5;
@@ -14,10 +15,15 @@ const THRESHOLD_STEP = 0.01;
 const THRESHOLD_DEFAULT = 0.9;
 // How many names the missed-object breakdown lists.
 const MISSED_NAME_CAP = 10;
+// The mask sources dino2.json segments the same Grounding DINO boxes with.
+const MASK_SOURCES = ["baseline", "sam2_fill", "sam3_snap", "sam3_geo"];
+const MASK_SOURCE_DEFAULT = "sam3_snap";
 
-// Shape of dino.json: the Grounding DINO plus SAM2 run, one entry per frame
-// with the matched IoU per ground-truth object. Every field is optional,
-// the file is written while the evaluation runs.
+// Shape of dino2.json: the same Grounding DINO boxes turned into masks four
+// ways. runs_by_source holds one entry per frame per mask source, with the
+// matched IoU per ground-truth object, and sources holds the published
+// summary of each. Every field is optional, the file is written while the
+// evaluation runs, and a source that did not run is null or absent.
 interface DinoObject {
   oid?: string;
   name?: string;
@@ -27,6 +33,7 @@ interface DinoObject {
 
 interface DinoRun {
   run?: string;
+  run_base?: string;
   n_objects?: number;
   iou_min?: number;
   iou_mean?: number;
@@ -38,26 +45,35 @@ interface DinoRun {
 }
 
 interface DinoSummary {
+  n_frames?: number;
+  n_objects?: number;
   covered?: number;
+  covered_frames?: number;
   mean_extra?: number;
   perfect?: number;
+  perfect_frames?: number;
+  mean_iou?: number;
   cov_iou?: number;
   extra_iou?: number;
+  method?: string;
 }
 
-interface Dino {
-  updated?: string;
+interface DinoBoxes {
   method?: string;
   prompt?: string;
   cutoff?: string | number;
   nms?: string;
-  runs_done?: number;
-  runs_total?: number;
-  summary?: DinoSummary;
-  runs?: DinoRun[];
 }
 
-// 403 and 404 mean the evaluation has not written dino.json to the bucket yet,
+interface Dino {
+  updated?: string;
+  boxes?: DinoBoxes;
+  best?: string;
+  sources?: Record<string, DinoSummary | null>;
+  runs_by_source?: Record<string, DinoRun[] | null>;
+}
+
+// 403 and 404 mean the evaluation has not written dino2.json to the bucket yet,
 // so they are not errors: return null and let the poll pick the file up once
 // it lands.
 async function getDino(): Promise<Dino | null> {
@@ -66,7 +82,7 @@ async function getDino(): Promise<Dino | null> {
     return null;
   }
   if (!response.ok) {
-    throw new Error(`Failed to fetch dino.json (${response.status})`);
+    throw new Error(`Failed to fetch dino2.json (${response.status})`);
   }
   return (await response.json()) as Dino;
 }
@@ -111,6 +127,31 @@ function dinoCovered(run: DinoRun, threshold: number): boolean {
   return run.covered === true || run.covered === 1;
 }
 
+// Overlays live under dino2_frames/<source>/<run>.png. The file carries the
+// path already, the fallback keeps a frame visible if it is missing.
+function overlayUrl(run: DinoRun, source: string): string | null {
+  if (run.overlay) return `${BUCKET_URL}${run.overlay}`;
+  const base = run.run_base;
+  if (!base) return null;
+  return `${BUCKET_URL}${FRAMES_PREFIX}${source}/${base}.png`;
+}
+
+// The sources that actually have frames, in the fixed display order.
+function availableSources(dino: Dino): string[] {
+  const bySource = dino.runs_by_source ?? {};
+  const known = MASK_SOURCES.filter((source) => {
+    const runs = bySource[source];
+    return Array.isArray(runs) && runs.length > 0;
+  });
+  const extra = Object.keys(bySource).filter(
+    (source) =>
+      !MASK_SOURCES.includes(source) &&
+      Array.isArray(bySource[source]) &&
+      (bySource[source] as DinoRun[]).length > 0,
+  );
+  return [...known, ...extra];
+}
+
 function dinoExtras(run: DinoRun): number {
   return isNumber(run.n_extra) ? run.n_extra : 0;
 }
@@ -124,6 +165,24 @@ function dinoMissedNames(run: DinoRun, threshold: number): string[] {
     if (object.iou_match < threshold) missed.push(object.name ?? "unnamed");
   }
   return missed;
+}
+
+// Tile notes pair the number at the slider with the number the file publishes
+// for the selected source, so both are visible without new tiles.
+function withFileNote(
+  live?: string,
+  fileValue?: number,
+  suffix?: string,
+): string | undefined {
+  const parts: string[] = [];
+  if (live) parts.push(live);
+  if (isNumber(fileValue)) {
+    const shown = Number.isInteger(fileValue)
+      ? String(fileValue)
+      : fileValue.toFixed(3);
+    parts.push(`file ${shown}${suffix ? ` ${suffix}` : ""}`);
+  }
+  return parts.length > 0 ? parts.join(" | ") : undefined;
 }
 
 const StatTile: FC<{ label: string; value: string; note?: string }> = ({
@@ -250,20 +309,22 @@ const MissedNamesTable: FC<{
   </div>
 );
 
-const DinoCard: FC<{ row: DinoRow; threshold: number }> = ({
+const DinoCard: FC<{ row: DinoRow; threshold: number; source: string }> = ({
   row,
   threshold,
+  source,
 }) => {
   const run = row.run;
   const name = run.run ?? "unknown run";
   const objects = run.objects ?? [];
+  const overlay = overlayUrl(run, source);
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-slate-300 bg-slate-100/50 p-3 shadow-lg backdrop-blur-sm">
-      {run.overlay ? (
+      {overlay ? (
         <img
           className="w-full rounded-lg border border-slate-300 bg-black"
-          src={`${BUCKET_URL}${run.overlay}`}
-          alt={`Grounding DINO overlay for ${name}`}
+          src={overlay}
+          alt={`${source} overlay for ${name}`}
           loading="lazy"
         />
       ) : (
@@ -323,14 +384,21 @@ const DinoCard: FC<{ row: DinoRow; threshold: number }> = ({
   );
 };
 
-const DinoView: FC<{ dino: Dino; threshold: number }> = ({
-  dino,
-  threshold,
-}) => {
+const DinoView: FC<{
+  dino: Dino;
+  threshold: number;
+  sources: string[];
+  source: string;
+  onSource: (next: string) => void;
+}> = ({ dino, threshold, sources, source, onSource }) => {
   const [coverFilter, setCoverFilter] = useState<CoverFilter>("missed");
   const [onlyExtras, setOnlyExtras] = useState(false);
 
-  const runs = useMemo(() => dino.runs ?? [], [dino]);
+  const runs = useMemo(
+    () => dino.runs_by_source?.[source] ?? [],
+    [dino, source],
+  );
+  const summary = dino.sources?.[source] ?? null;
 
   const rows = useMemo<DinoRow[]>(
     () =>
@@ -369,6 +437,11 @@ const DinoView: FC<{ dino: Dino; threshold: number }> = ({
     [rows],
   );
 
+  const missedFromFile =
+    summary && isNumber(summary.n_frames) && isNumber(summary.covered_frames)
+      ? summary.n_frames - summary.covered_frames
+      : undefined;
+
   // Weakest coverage first, so the frames DINO misses worst come up top.
   const picked = useMemo(() => {
     const kept = rows.filter((row) => {
@@ -383,20 +456,40 @@ const DinoView: FC<{ dino: Dino; threshold: number }> = ({
   }, [rows, coverFilter, onlyExtras]);
   const gallery = picked.slice(0, GALLERY_CAP);
 
+  const boxes = dino.boxes ?? {};
   const cutoff =
-    dino.cutoff === undefined || dino.cutoff === null
+    boxes.cutoff === undefined || boxes.cutoff === null
       ? "n/a"
-      : String(dino.cutoff);
+      : String(boxes.cutoff);
 
   return (
     <>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-slate-300 bg-slate-100/50 px-4 py-3 font-mono text-sm text-gray-700">
-        <span className="break-all">{dino.method ?? "method n/a"}</span>
-        <span className="break-all">prompt "{dino.prompt ?? "n/a"}"</span>
+        <span className="break-all">{boxes.method ?? "method n/a"}</span>
+        <span className="break-all">prompt "{boxes.prompt ?? "n/a"}"</span>
         <span>cutoff {cutoff}</span>
+        <span className="break-all">
+          {source} masks: {summary?.method ?? "method n/a"}
+        </span>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          mask source
+          <select
+            className="h-9 rounded-md border border-slate-300 bg-white px-2 font-mono text-sm text-gray-800"
+            value={source}
+            onChange={(event) => onSource(event.target.value)}
+            aria-label="mask source"
+          >
+            {sources.map((option) => (
+              <option key={option} value={option}>
+                {option}
+                {option === dino.best ? " (best)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
         <Toggle
           ariaLabel="coverage filter"
           value={coverFilter}
@@ -419,35 +512,52 @@ const DinoView: FC<{ dino: Dino; threshold: number }> = ({
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <StatTile label="frames" value={String(stats.total)} />
+        <StatTile
+          label="frames"
+          value={String(stats.total)}
+          note={withFileNote(undefined, summary?.n_objects, "objects")}
+        />
         <StatTile
           label="frames covered"
           value={String(stats.covered)}
-          note={
-            stats.total > 0 ? formatPercent(stats.covered / stats.total) : "n/a"
-          }
+          note={withFileNote(
+            stats.total > 0
+              ? formatPercent(stats.covered / stats.total)
+              : undefined,
+            summary?.covered_frames,
+          )}
         />
         <StatTile
           label="frames missing something"
           value={String(stats.missed)}
-          note={
-            stats.total > 0 ? formatPercent(stats.missed / stats.total) : "n/a"
-          }
+          note={withFileNote(
+            stats.total > 0
+              ? formatPercent(stats.missed / stats.total)
+              : undefined,
+            missedFromFile,
+          )}
         />
         <StatTile
           label="mean extras per frame"
           value={
             stats.meanExtras === null ? "n/a" : stats.meanExtras.toFixed(2)
           }
+          note={withFileNote(undefined, summary?.mean_extra)}
         />
         <StatTile
           label="perfect frames"
           value={String(stats.perfect)}
-          note={
+          note={withFileNote(
             stats.total > 0
               ? `${formatPercent(stats.perfect / stats.total)}, covered and no extras`
-              : "covered and no extras"
-          }
+              : "covered and no extras",
+            summary?.perfect_frames,
+          )}
+        />
+        <StatTile
+          label="mean IoU"
+          value={formatIou(summary?.mean_iou)}
+          note={`file, cov_iou ${formatIou(summary?.cov_iou)}`}
         />
         <MissedNamesTable
           rows={missedNames}
@@ -458,7 +568,7 @@ const DinoView: FC<{ dino: Dino; threshold: number }> = ({
 
       <div className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold text-gray-800">
-          {COVER_FILTER_TITLE[coverFilter]} at {threshold.toFixed(2)}
+          {COVER_FILTER_TITLE[coverFilter]} at {threshold.toFixed(2)}, {source}
           {onlyExtras ? ", with extras" : ""}
         </h2>
         {picked.length === 0 ? (
@@ -474,6 +584,7 @@ const DinoView: FC<{ dino: Dino; threshold: number }> = ({
                   key={row.run.run ?? `frame-${index}`}
                   row={row}
                   threshold={threshold}
+                  source={source}
                 />
               ))}
             </div>
@@ -490,17 +601,26 @@ export const Sam3Page: FC = () => {
     THRESHOLD_DEFAULT.toFixed(2),
   );
 
+  const [source, setSource] = useState(MASK_SOURCE_DEFAULT);
+
   const { data, isPending, error } = useQuery({
-    queryKey: ["dino"],
+    queryKey: ["dino2"],
     queryFn: getDino,
     refetchInterval: REFETCH_MS,
     retry: false,
   });
   const dino = data ?? null;
-  const dinoCount = dino?.runs?.length ?? 0;
+  const sources = useMemo(() => (dino ? availableSources(dino) : []), [dino]);
+  // The default source may not be in the file, fall back to its best.
+  const picked =
+    sources.length === 0 || sources.includes(source)
+      ? source
+      : sources.includes(dino?.best ?? "")
+        ? (dino?.best as string)
+        : sources[0];
 
-  const runsDone = dino?.runs_done ?? dinoCount;
-  const runsTotal = dino?.runs_total ?? dinoCount;
+  const runsDone = dino?.runs_by_source?.[picked]?.length ?? 0;
+  const runsTotal = dino?.sources?.[picked]?.n_frames ?? runsDone;
   const progress = runsTotal > 0 ? Math.min(1, runsDone / runsTotal) : 0;
 
   const applyThreshold = (raw: string) => {
@@ -532,13 +652,13 @@ export const Sam3Page: FC = () => {
 
       {!isPending && error && (
         <div className="text-red-600">
-          Failed to load dino.json: {error.message}
+          Failed to load dino2.json: {error.message}
         </div>
       )}
 
       {!isPending && !error && !dino && (
         <div className="rounded-xl border border-slate-300 bg-slate-100/50 p-6 text-gray-600">
-          dino data not published yet. This page retries every minute.
+          dino2 data not published yet. This page retries every minute.
         </div>
       )}
 
@@ -590,7 +710,13 @@ export const Sam3Page: FC = () => {
             />
           </div>
 
-          <DinoView dino={dino} threshold={threshold} />
+          <DinoView
+            dino={dino}
+            threshold={threshold}
+            sources={sources}
+            source={picked}
+            onSource={setSource}
+          />
         </div>
       )}
     </div>
