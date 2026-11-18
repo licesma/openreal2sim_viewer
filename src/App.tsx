@@ -3,7 +3,6 @@ import "@google/model-viewer";
 import { MainPage } from "@/pages/MainPage";
 import { StatsPage } from "@/pages/StatsPage";
 import { ManualMetadataPage } from "@/pages/ManualMetadataPage";
-import { AutoSegPage } from "@/pages/AutoSegPage";
 import { useMetadata } from "./hooks/useMetadata";
 import type { AuthorType } from "@/types/Author";
 import { type StatusType } from "@/types/Status";
@@ -61,7 +60,6 @@ function App() {
           }
         />
         <Route path="/stats" element={<StatsPage />} />
-        <Route path="/auto_seg" element={<AutoSegPage />} />
         <Route path="/manual_metadata" element={<ManualMetadataPage />} />
       </Routes>
     </div>
