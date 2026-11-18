@@ -8,6 +8,7 @@ const BUCKET_URL = "https://openreal2sim-sam.s3.us-west-2.amazonaws.com/";
 const RESULTS_URL = `${BUCKET_URL}auto_seg_1k/results.json`;
 const GENERIC_URL = `${BUCKET_URL}auto_seg_1k/generic.json`;
 const TOPK_URL = `${BUCKET_URL}auto_seg_1k/topk.json`;
+const TOPK20_URL = `${BUCKET_URL}auto_seg_1k/topk20.json`;
 const REFETCH_MS = 60_000;
 const GALLERY_CAP = 200;
 const THRESHOLD_MIN = 0.5;
@@ -20,6 +21,16 @@ const EXTRA_CUTOFF = "0.3";
 // Values of k offered when topk.json does not say which ones it carries.
 const K_FALLBACK = ["3", "5", "10"];
 const K_DEFAULT = "5";
+// Range of the k slider driven by topk20.json.
+const K_MIN = 1;
+const K_MAX_FALLBACK = 20;
+const K_SLIDER_DEFAULT = 5;
+// A ranked entry below this IoU counts as an extra mask, not as a hit.
+const EXTRA_IOU = 0.5;
+// Steps of the "k needed to cover all" table.
+const K_TABLE_STEPS = [1, 2, 3, 5, 10, 20];
+const OVERLAY_DIR_FALLBACK = "auto_seg_1k/topk20/";
+const OVERLAY_EXT_FALLBACK = ".png";
 
 type ViewMode = "frames" | "objects";
 type IouMode = "plain" | "merged";
@@ -87,6 +98,33 @@ interface Sam3Topk {
   by_k?: Record<string, Sam3TopkFrame[]>;
 }
 
+// One entry of the ranked proposal list of a topk20.json run: gt is the
+// ground-truth name it matched, or null when it matched nothing.
+interface Sam3Ranked {
+  rank?: number;
+  score?: number;
+  area_frac?: number;
+  gt?: string | null;
+  iou?: number | null;
+}
+
+interface Sam3Topk20Run {
+  run?: string;
+  n_gt?: number;
+  gt_names?: string[];
+  ranked?: Sam3Ranked[];
+}
+
+interface Sam3Topk20 {
+  updated?: string;
+  prompt?: string;
+  k_max?: number;
+  runs_total?: number;
+  overlay_dir?: string;
+  overlay_ext?: string;
+  runs?: Sam3Topk20Run[];
+}
+
 interface Sam3Results {
   updated?: string;
   prompt?: string;
@@ -130,6 +168,17 @@ async function getSam3Topk(): Promise<Sam3Topk | null> {
     throw new Error(`Failed to fetch topk.json (${response.status})`);
   }
   return (await response.json()) as Sam3Topk;
+}
+
+async function getSam3Topk20(): Promise<Sam3Topk20 | null> {
+  const response = await fetch(TOPK20_URL, { cache: "no-store" });
+  if (response.status === 403 || response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch topk20.json (${response.status})`);
+  }
+  return (await response.json()) as Sam3Topk20;
 }
 
 function formatIou(value?: number): string {
@@ -210,6 +259,123 @@ function kOptions(topk: Sam3Topk): string[] {
   }
   const list = keys.size > 0 ? [...keys] : K_FALLBACK;
   return list.sort((a, b) => Number(a) - Number(b));
+}
+
+// Overlays of topk20.json live in one directory per k, named after the last
+// segment of the run id.
+function runBasename(run: string): string {
+  const parts = run.split("/").filter((part) => part.length > 0);
+  return parts.length > 0 ? parts[parts.length - 1] : run;
+}
+
+function overlayUrl(topk20: Sam3Topk20, run: string, k: number): string {
+  const rawDir = topk20.overlay_dir ?? OVERLAY_DIR_FALLBACK;
+  const dir = rawDir.endsWith("/") ? rawDir : `${rawDir}/`;
+  const ext = topk20.overlay_ext ?? OVERLAY_EXT_FALLBACK;
+  return `${BUCKET_URL}${dir}k${k}/${runBasename(run)}${ext}`;
+}
+
+function topk20KMax(topk20: Sam3Topk20): number {
+  if (!isNumber(topk20.k_max) || topk20.k_max < K_MIN) return K_MAX_FALLBACK;
+  return Math.floor(topk20.k_max);
+}
+
+// The rank of a ranked entry, falling back to its position in the list when
+// the evaluation did not write the field.
+function entryRank(entry: Sam3Ranked, index: number): number {
+  return isNumber(entry.rank) ? entry.rank : index + 1;
+}
+
+function entryName(entry: Sam3Ranked): string | null {
+  return typeof entry.gt === "string" && entry.gt.length > 0 ? entry.gt : null;
+}
+
+function entryIou(entry: Sam3Ranked): number | null {
+  return isNumber(entry.iou) ? entry.iou : null;
+}
+
+interface Topk20Eval {
+  // One entry per ground-truth object still not matched, so a scene with two
+  // objects of the same name can be half covered.
+  missed: string[];
+  nExtra: number;
+  covered: boolean;
+}
+
+// Coverage of one frame at a given k and IoU threshold, counted per name so
+// duplicate ground-truth names need one matching mask each.
+function evaluateTopk20Run(
+  run: Sam3Topk20Run,
+  k: number,
+  threshold: number,
+): Topk20Eval {
+  const needed = new Map<string, number>();
+  for (const name of run.gt_names ?? []) {
+    if (typeof name !== "string") continue;
+    needed.set(name, (needed.get(name) ?? 0) + 1);
+  }
+
+  const hits = new Map<string, number>();
+  let nExtra = 0;
+  (run.ranked ?? []).forEach((entry, index) => {
+    if (entryRank(entry, index) > k) return;
+    const name = entryName(entry);
+    const iou = entryIou(entry);
+    if (name === null || (iou !== null && iou < EXTRA_IOU)) nExtra += 1;
+    if (name !== null && iou !== null && iou >= threshold) {
+      hits.set(name, (hits.get(name) ?? 0) + 1);
+    }
+  });
+
+  const missed: string[] = [];
+  for (const [name, count] of needed) {
+    const have = hits.get(name) ?? 0;
+    for (let index = have; index < count; index += 1) missed.push(name);
+  }
+
+  return { missed, nExtra, covered: missed.length === 0 };
+}
+
+// The smallest k that covers every ground-truth object at the threshold, or
+// null when no k up to k_max does. Computed from ranked so it follows the
+// slider instead of the precomputed field of the file.
+function topk20KNeeded(
+  run: Sam3Topk20Run,
+  kMax: number,
+  threshold: number,
+): number | null {
+  for (let k = K_MIN; k <= kMax; k += 1) {
+    if (evaluateTopk20Run(run, k, threshold).covered) return k;
+  }
+  return null;
+}
+
+interface RankedChip {
+  label: string;
+  extra: boolean;
+}
+
+// Chips read "r1 pen 0.96" for a match and "r2 extra 0.10" for a mask that
+// matched no ground-truth object.
+function rankedChips(run: Sam3Topk20Run, k: number): RankedChip[] {
+  const chips: RankedChip[] = [];
+  (run.ranked ?? []).forEach((entry, index) => {
+    const rank = entryRank(entry, index);
+    if (rank > k) return;
+    const name = entryName(entry);
+    const iou = entryIou(entry);
+    if (name === null) {
+      const score = isNumber(entry.score) ? entry.score.toFixed(2) : "n/a";
+      chips.push({ label: `r${rank} extra ${score}`, extra: true });
+      return;
+    }
+    const shown = iou === null ? "n/a" : iou.toFixed(2);
+    chips.push({
+      label: `r${rank} ${name} ${shown}`,
+      extra: iou !== null && iou < EXTRA_IOU,
+    });
+  });
+  return chips;
 }
 
 interface Bin {
@@ -862,6 +1028,265 @@ const TopkView: FC<{ topk: Sam3Topk; threshold: number }> = ({
   );
 };
 
+type CoverFilter = "missed" | "all" | "covered";
+
+const COVER_FILTER_TITLE: Record<CoverFilter, string> = {
+  missed: "Frames missing something",
+  all: "All frames",
+  covered: "Fully covered frames",
+};
+
+interface Topk20Row extends Topk20Eval {
+  run: Sam3Topk20Run;
+}
+
+interface KNeededRow {
+  label: string;
+  count: number;
+}
+
+const Topk20Card: FC<{
+  row: Topk20Row;
+  k: number;
+  overlay: string;
+}> = ({ row, k, overlay }) => {
+  const chips = rankedChips(row.run, k);
+  const name = row.run.run ?? "unknown run";
+  const nGt = row.run.n_gt ?? row.run.gt_names?.length;
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-slate-300 bg-slate-100/50 p-3 shadow-lg backdrop-blur-sm">
+      <img
+        className="w-full rounded-lg border border-slate-300 bg-black"
+        src={overlay}
+        alt={`Top ${k} overlay for ${name}`}
+        loading="lazy"
+      />
+      <div className="flex flex-col gap-1">
+        <span className="font-mono text-sm break-all text-gray-700">
+          {name}
+        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={
+              row.covered
+                ? "rounded-full bg-slate-700 px-2 py-0.5 text-xs font-medium text-white"
+                : "rounded-full bg-amber-500 px-2 py-0.5 text-xs font-medium text-white"
+            }
+          >
+            {row.covered ? "covered" : "missed"}
+          </span>
+          <span className="font-mono text-sm text-gray-600">
+            n_extra {row.nExtra} | n_gt {nGt ?? "n/a"}
+          </span>
+        </div>
+        {row.missed.length > 0 && (
+          <span className="font-mono text-sm font-semibold text-red-600">
+            missed {row.missed.join(", ")}
+          </span>
+        )}
+        {chips.length > 0 && (
+          <div className="flex flex-wrap gap-1 border-t border-slate-300 pt-2">
+            {chips.map((chip, index) => (
+              <span
+                key={`${chip.label}-${index}`}
+                className={
+                  chip.extra
+                    ? "rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 font-mono text-[11px] text-amber-700"
+                    : "rounded border border-slate-300 bg-white px-1.5 py-0.5 font-mono text-[11px] text-gray-600"
+                }
+              >
+                {chip.label}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const KNeededTable: FC<{
+  rows: KNeededRow[];
+  total: number;
+  threshold: number;
+}> = ({ rows, total, threshold }) => (
+  <div className="flex min-w-[14rem] flex-col gap-1 rounded-lg border border-slate-300 bg-slate-100/50 px-3 py-2">
+    <span className="text-xs tracking-wide text-gray-500 uppercase">
+      k needed to cover all at {threshold.toFixed(2)}
+    </span>
+    <table className="font-mono text-sm text-gray-700">
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.label}>
+            <td className="pr-4 text-gray-500">{row.label}</td>
+            <td className="pr-3 text-right font-semibold">{row.count}</td>
+            <td className="text-right text-gray-500">
+              {total > 0 ? formatPercent(row.count / total) : "n/a"}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+);
+
+const Topk20View: FC<{ topk20: Sam3Topk20; threshold: number }> = ({
+  topk20,
+  threshold,
+}) => {
+  const [kChoice, setKChoice] = useState(K_SLIDER_DEFAULT);
+  const [coverFilter, setCoverFilter] = useState<CoverFilter>("missed");
+  const [onlyExtras, setOnlyExtras] = useState(false);
+
+  const kMax = topk20KMax(topk20);
+  const k = Math.min(Math.max(kChoice, K_MIN), kMax);
+  const runs = useMemo(() => topk20.runs ?? [], [topk20]);
+
+  const rows = useMemo(
+    () => runs.map((run) => ({ run, ...evaluateTopk20Run(run, k, threshold) })),
+    [runs, k, threshold],
+  );
+
+  const stats = useMemo(() => {
+    const total = rows.length;
+    const covered = rows.filter((row) => row.covered).length;
+    const meanExtras = mean(rows.map((row) => row.nExtra));
+    return { total, covered, missed: total - covered, meanExtras };
+  }, [rows]);
+
+  // Smallest covering k per frame, recomputed from ranked so the table follows
+  // the IoU slider.
+  const kTable = useMemo(() => {
+    const needed = runs.map((run) => topk20KNeeded(run, kMax, threshold));
+    const steps = K_TABLE_STEPS.filter((step) => step <= kMax);
+    if (steps.length === 0 || steps[steps.length - 1] !== kMax)
+      steps.push(kMax);
+    const table: KNeededRow[] = steps.map((step) => ({
+      label: `k <= ${step}`,
+      count: needed.filter((value) => value !== null && value <= step).length,
+    }));
+    table.push({
+      label: "never",
+      count: needed.filter((value) => value === null).length,
+    });
+    return table;
+  }, [runs, kMax, threshold]);
+
+  // Worst frames first: most missing objects, then most extra masks.
+  const picked = useMemo(() => {
+    const kept = rows.filter((row) => {
+      if (coverFilter === "missed" && row.covered) return false;
+      if (coverFilter === "covered" && !row.covered) return false;
+      if (onlyExtras && row.nExtra === 0) return false;
+      return true;
+    });
+    return [...kept].sort((a, b) => {
+      const byMissed = b.missed.length - a.missed.length;
+      if (byMissed !== 0) return byMissed;
+      return b.nExtra - a.nExtra;
+    });
+  }, [rows, coverFilter, onlyExtras]);
+  const gallery = picked.slice(0, GALLERY_CAP);
+
+  return (
+    <>
+      <div className="flex flex-col gap-3 rounded-xl border border-slate-300 bg-slate-100/50 p-4">
+        <div className="flex items-center gap-4">
+          <span className="text-sm font-medium text-gray-700">top-k</span>
+          <span className="font-mono text-4xl font-bold text-gray-800">
+            {k}
+          </span>
+          <span className="text-sm text-gray-500">of {kMax}</span>
+        </div>
+        <input
+          className="h-2 w-full cursor-pointer accent-slate-700"
+          type="range"
+          min={K_MIN}
+          max={kMax}
+          step={1}
+          value={k}
+          onChange={(event) => setKChoice(Number(event.target.value))}
+          aria-label="top-k value"
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Toggle
+          ariaLabel="coverage filter"
+          value={coverFilter}
+          onChange={setCoverFilter}
+          options={[
+            { value: "missed", label: "missed something" },
+            { value: "all", label: "all" },
+            { value: "covered", label: "fully covered" },
+          ]}
+        />
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            className="h-4 w-4 accent-slate-700"
+            type="checkbox"
+            checked={onlyExtras}
+            onChange={(event) => setOnlyExtras(event.target.checked)}
+          />
+          only frames with extras
+        </label>
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <StatTile label="frames" value={String(stats.total)} />
+        <StatTile
+          label="frames covered"
+          value={String(stats.covered)}
+          note={
+            stats.total > 0 ? formatPercent(stats.covered / stats.total) : "n/a"
+          }
+        />
+        <StatTile
+          label="frames missing something"
+          value={String(stats.missed)}
+          note={
+            stats.total > 0 ? formatPercent(stats.missed / stats.total) : "n/a"
+          }
+        />
+        <StatTile
+          label="mean extras per frame"
+          value={
+            stats.meanExtras === null ? "n/a" : stats.meanExtras.toFixed(2)
+          }
+          note={`k ${k}`}
+        />
+        <KNeededTable rows={kTable} total={stats.total} threshold={threshold} />
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold text-gray-800">
+          {COVER_FILTER_TITLE[coverFilter]} at k {k}
+          {onlyExtras ? ", with extras" : ""}
+        </h2>
+        {picked.length === 0 ? (
+          <p className="text-gray-600">No frames to show at k {k}.</p>
+        ) : (
+          <>
+            <p className="text-sm text-gray-600">
+              showing {gallery.length} of {picked.length}
+            </p>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {gallery.map((row, index) => (
+                <Topk20Card
+                  key={row.run.run ?? `frame-${index}`}
+                  row={row}
+                  k={k}
+                  overlay={overlayUrl(topk20, row.run.run ?? "", k)}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+};
+
 export const Sam3Page: FC = () => {
   const [threshold, setThreshold] = useState(THRESHOLD_DEFAULT);
   const [thresholdText, setThresholdText] = useState(
@@ -897,6 +1322,17 @@ export const Sam3Page: FC = () => {
   });
   const topk = topkQuery.data ?? null;
 
+  // topk20.json is the file behind the k slider; while it is missing the page
+  // falls back to the fixed k values of topk.json.
+  const topk20Query = useQuery({
+    queryKey: ["sam3Topk20"],
+    queryFn: getSam3Topk20,
+    refetchInterval: REFETCH_MS,
+    retry: false,
+  });
+  const topk20 = topk20Query.data ?? null;
+  const topk20Count = topk20?.runs?.length ?? 0;
+
   const objects = useMemo(() => data?.objects ?? [], [data]);
 
   // done is the longest per-k list, so the progress bar means the same thing
@@ -912,13 +1348,14 @@ export const Sam3Page: FC = () => {
     };
   }, [topk]);
 
+  const hasTopkData = topkCounts.any > 0 || topk20Count > 0;
   const hasRunData =
     (data?.runs?.length ?? 0) > 0 || (generic?.runs?.length ?? 0) > 0;
-  const hasFrameData = hasRunData || topkCounts.any > 0;
+  const hasFrameData = hasRunData || hasTopkData;
   // Top-k is the default data mode when it is the only frame-level file on the
   // bucket, otherwise the named run leads as before.
   const nameMode: NameMode =
-    modeChoice ?? (hasRunData || topkCounts.any === 0 ? "names" : "topk");
+    modeChoice ?? (hasRunData || !hasTopkData ? "names" : "topk");
   const noNames = nameMode === "nonames";
   const topkMode = nameMode === "topk";
   const frameData = noNames ? generic : (data ?? null);
@@ -929,14 +1366,21 @@ export const Sam3Page: FC = () => {
 
   const headerData =
     view === "frames" && !topkMode && frameData ? frameData : data;
-  const headerUpdated = topkMode ? topk?.updated : headerData?.updated;
+  const headerUpdated = topkMode
+    ? (topk20?.updated ?? topk?.updated)
+    : headerData?.updated;
   const headerPrompt = topkMode
-    ? topk?.prompt
+    ? (topk20?.prompt ?? topk?.prompt)
     : noNames
       ? frameData?.prompt
       : undefined;
-  const runsDone = topkMode ? topkCounts.done : (headerData?.runs_done ?? 0);
-  const runsTotal = (topkMode ? topk?.runs_total : headerData?.runs_total) ?? 0;
+  const runsDone = topkMode
+    ? Math.max(topk20Count, topkCounts.done)
+    : (headerData?.runs_done ?? 0);
+  const runsTotal =
+    (topkMode
+      ? (topk20?.runs_total ?? topk?.runs_total)
+      : headerData?.runs_total) ?? 0;
   const runsSkipped = topkMode ? undefined : headerData?.runs_skipped;
   const progress = runsTotal > 0 ? Math.min(1, runsDone / runsTotal) : 0;
 
@@ -1079,8 +1523,15 @@ export const Sam3Page: FC = () => {
 
           {view === "frames" ? (
             topkMode ? (
-              topk ? (
-                <TopkView topk={topk} threshold={threshold} />
+              topk20 ? (
+                <Topk20View topk20={topk20} threshold={threshold} />
+              ) : topk ? (
+                <>
+                  <p className="text-sm text-gray-600">
+                    slider data not published yet
+                  </p>
+                  <TopkView topk={topk} threshold={threshold} />
+                </>
               ) : (
                 <p className="text-sm text-gray-600">
                   top-k data not published yet
