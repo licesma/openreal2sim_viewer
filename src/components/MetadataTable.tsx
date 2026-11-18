@@ -59,9 +59,9 @@ export const MetadataTable = ({ data, onSelect }: MetadataTableProps) => {
 
   const filteredRowData = useMemo(() => {
     if (!filterText.trim()) return rowData;
-    const lowerFilter = filterText.toLowerCase();
+    const filterTerms = filterText.toLowerCase().split(/\s+/).filter(Boolean);
     return rowData.filter((row) =>
-      row.name.toLowerCase().includes(lowerFilter)
+      filterTerms.some((term) => row.name.toLowerCase().includes(term))
     );
   }, [rowData, filterText]);
 
