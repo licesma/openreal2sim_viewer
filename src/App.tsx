@@ -20,14 +20,15 @@ function App() {
   const [selectedWeek, setSelectedWeek] = useState<WeekType>("all");
   const [selectedStatus, setSelectedStatus] = useState<StatusType>("all");
   const [selectedPose, setSelectedPose] = useState<PoseType>("all");
+  const [nameFilter, setNameFilter] = useState("");
   const [showFilters, setShowFilters] = useState(false);
 
   const { data } = useMetadata();
 
   const filteredVideos = useMemo(() => {
     if (!data) return {};
-    return filterVideos(data, selectedAuthor, selectedWeek, selectedStatus, selectedPose);
-  }, [data, selectedAuthor, selectedWeek, selectedStatus, selectedPose]);
+    return filterVideos(data, selectedAuthor, selectedWeek, selectedStatus, selectedPose, nameFilter);
+  }, [data, selectedAuthor, selectedWeek, selectedStatus, selectedPose, nameFilter]);
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -51,6 +52,8 @@ function App() {
                   onStatusChange={(status: StatusType) => setSelectedStatus(status)}
                   selectedPose={selectedPose}
                   onPoseChange={(p: PoseType) => setSelectedPose(p)}
+                  nameFilter={nameFilter}
+                  onNameFilterChange={(name: string) => setNameFilter(name)}
                   showFilters={showFilters}
                 />
               </div>

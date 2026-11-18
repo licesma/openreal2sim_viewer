@@ -9,7 +9,8 @@ export function filterVideos(
     selectedAuthor: AuthorType,
     selectedWeek: WeekType,
     selectedStatus: string,
-    selectedPose: string
+    selectedPose: string,
+    nameFilter: string = ""
 ) {
     const filteredByAuthor =
         selectedAuthor !== "all"
@@ -47,5 +48,16 @@ export function filterVideos(
             ) as Record<string, VideoMetadata>)
             : filteredByStatus;
 
-    return filteredByPose;
+    const nameTerms = nameFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+    const filteredByName =
+        nameTerms.length > 0
+            ? (Object.fromEntries(
+                Object.entries(filteredByPose).filter(([name]) =>
+                    nameTerms.some((term) => name.toLowerCase().includes(term))
+                )
+            ) as Record<string, VideoMetadata>)
+            : filteredByPose;
+
+    return filteredByName;
 }

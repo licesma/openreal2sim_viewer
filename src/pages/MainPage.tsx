@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 
 export interface MainPageProps {
   allMetadata: Record<string, VideoMetadata>;
@@ -32,6 +33,8 @@ export interface MainPageProps {
   onStatusChange: (status: StatusType) => void;
   selectedPose: PoseType;
   onPoseChange: (pose: PoseType) => void;
+  nameFilter: string;
+  onNameFilterChange: (name: string) => void;
   showFilters: boolean;
 }
 
@@ -45,6 +48,8 @@ export const MainPage: React.FC<MainPageProps> = ({
   onStatusChange,
   selectedPose,
   onPoseChange,
+  nameFilter,
+  onNameFilterChange,
   showFilters,
 }) => {
   const { getMetadata } = useMetadata();
@@ -142,6 +147,16 @@ export const MainPage: React.FC<MainPageProps> = ({
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label className="ml-2">Name</Label>
+                <Input
+                  value={nameFilter}
+                  onChange={(e) => onNameFilterChange(e.target.value)}
+                  placeholder="Filter by name..."
+                  aria-label="Filter by name"
+                  className="w-32 bg-slate-200/50 border-slate-700 text-slate-700 placeholder:text-slate-500"
+                />
               </div>
             </div>
           )}
