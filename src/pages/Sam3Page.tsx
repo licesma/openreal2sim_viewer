@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 const BUCKET_URL = "https://openreal2sim-sam.s3.us-west-2.amazonaws.com/";
 const RESULTS_URL = `${BUCKET_URL}auto_seg_1k/results.json`;
 const GENERIC_URL = `${BUCKET_URL}auto_seg_1k/generic.json`;
+const TOPK_URL = `${BUCKET_URL}auto_seg_1k/topk.json`;
 const REFETCH_MS = 60_000;
 const GALLERY_CAP = 200;
 const THRESHOLD_MIN = 0.5;
@@ -16,10 +17,13 @@ const THRESHOLD_DEFAULT = 0.9;
 const BIN_WIDTH = 0.05;
 // Score cutoff of the n_extra entry shown as a stat tile.
 const EXTRA_CUTOFF = "0.3";
+// Values of k offered when topk.json does not say which ones it carries.
+const K_FALLBACK = ["3", "5", "10"];
+const K_DEFAULT = "5";
 
 type ViewMode = "frames" | "objects";
 type IouMode = "plain" | "merged";
-type NameMode = "names" | "nonames";
+type NameMode = "names" | "nonames" | "topk";
 
 interface Sam3Object {
   run: string;
@@ -57,6 +61,32 @@ interface Sam3Run {
   n_extra?: Record<string, number>;
 }
 
+// One proposal kept by the top-k run that matched no ground-truth object.
+interface Sam3Extra {
+  rank?: number;
+  score?: number;
+  area_frac?: number;
+}
+
+interface Sam3TopkFrame {
+  run?: string;
+  k?: number;
+  covered?: boolean;
+  n_gt?: number;
+  n_extra?: number;
+  iou_min?: number;
+  extras?: Sam3Extra[];
+  overlay?: string;
+}
+
+interface Sam3Topk {
+  updated?: string;
+  prompt?: string;
+  ks?: number[];
+  runs_total?: number;
+  by_k?: Record<string, Sam3TopkFrame[]>;
+}
+
 interface Sam3Results {
   updated?: string;
   prompt?: string;
@@ -89,6 +119,17 @@ async function getSam3Generic(): Promise<Sam3Results | null> {
     throw new Error(`Failed to fetch generic.json (${response.status})`);
   }
   return (await response.json()) as Sam3Results;
+}
+
+async function getSam3Topk(): Promise<Sam3Topk | null> {
+  const response = await fetch(TOPK_URL, { cache: "no-store" });
+  if (response.status === 403 || response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch topk.json (${response.status})`);
+  }
+  return (await response.json()) as Sam3Topk;
 }
 
 function formatIou(value?: number): string {
@@ -134,6 +175,41 @@ function objectIou(object: Sam3RunObject, mode: IouMode): number | undefined {
       ? (object.iou_merge ?? object.iou_match)
       : object.iou_match;
   return isNumber(value) ? value : undefined;
+}
+
+// topk.json carries its own covered flag at a fixed IoU, but the slider has to
+// drive the page, so covered is recomputed from iou_min whenever it is present.
+function frameCovered(frame: Sam3TopkFrame, threshold: number): boolean {
+  if (isNumber(frame.iou_min)) return frame.iou_min >= threshold;
+  return frame.covered === true;
+}
+
+function frameExtras(frame: Sam3TopkFrame): number {
+  if (isNumber(frame.n_extra)) return frame.n_extra;
+  return frame.extras?.length ?? 0;
+}
+
+function formatExtraChip(extra: Sam3Extra): string {
+  const rank = isNumber(extra.rank) ? `r${extra.rank}` : "r?";
+  const score = isNumber(extra.score) ? `s${extra.score.toFixed(2)}` : "s?";
+  const area = isNumber(extra.area_frac)
+    ? `${(extra.area_frac * 100).toFixed(0)}%`
+    : "?%";
+  return `${rank} ${score} ${area}`;
+}
+
+// The k values to offer: whatever the file declares, plus whatever it actually
+// carries, falling back to the three the evaluation runs.
+function kOptions(topk: Sam3Topk): string[] {
+  const keys = new Set<string>();
+  for (const value of topk.ks ?? []) {
+    if (isNumber(value)) keys.add(String(value));
+  }
+  for (const key of Object.keys(topk.by_k ?? {})) {
+    keys.add(key);
+  }
+  const list = keys.size > 0 ? [...keys] : K_FALLBACK;
+  return list.sort((a, b) => Number(a) - Number(b));
 }
 
 interface Bin {
@@ -617,13 +693,182 @@ const FramesView: FC<{
   );
 };
 
+const TopkCard: FC<{ frame: Sam3TopkFrame; threshold: number }> = ({
+  frame,
+  threshold,
+}) => {
+  const covered = frameCovered(frame, threshold);
+  const extras = frame.extras ?? [];
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-slate-300 bg-slate-100/50 p-3 shadow-lg backdrop-blur-sm">
+      {frame.overlay ? (
+        <img
+          className="w-full rounded-lg border border-slate-300 bg-black"
+          src={`${BUCKET_URL}${frame.overlay}`}
+          alt={`Top-k overlay for ${frame.run ?? "run"}`}
+          loading="lazy"
+        />
+      ) : (
+        <p className="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-sm text-gray-500">
+          No overlay image
+        </p>
+      )}
+      <div className="flex flex-col gap-1">
+        <span className="font-mono text-sm break-all text-gray-700">
+          {frame.run ?? "unknown run"}
+        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={
+              covered
+                ? "rounded-full bg-slate-700 px-2 py-0.5 text-xs font-medium text-white"
+                : "rounded-full bg-amber-500 px-2 py-0.5 text-xs font-medium text-white"
+            }
+          >
+            {covered ? "covered" : "not covered"}
+          </span>
+          <span className="font-mono text-sm text-gray-600">
+            n_extra {frameExtras(frame)} | iou_min {formatIou(frame.iou_min)} |
+            n_gt {frame.n_gt ?? "n/a"}
+          </span>
+        </div>
+        {extras.length > 0 && (
+          <div className="flex flex-wrap gap-1 border-t border-slate-300 pt-2">
+            {extras.map((extra, index) => (
+              <span
+                key={`${extra.rank ?? "r"}-${index}`}
+                className="rounded border border-slate-300 bg-white px-1.5 py-0.5 font-mono text-[11px] text-gray-600"
+              >
+                {formatExtraChip(extra)}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const TopkView: FC<{ topk: Sam3Topk; threshold: number }> = ({
+  topk,
+  threshold,
+}) => {
+  const [kChoice, setKChoice] = useState<string | null>(null);
+  const [onlyExtras, setOnlyExtras] = useState(true);
+
+  const ks = useMemo(() => kOptions(topk), [topk]);
+  const k =
+    kChoice !== null && ks.includes(kChoice)
+      ? kChoice
+      : ks.includes(K_DEFAULT)
+        ? K_DEFAULT
+        : (ks[0] ?? K_DEFAULT);
+  const frames = useMemo(() => topk.by_k?.[k] ?? [], [topk, k]);
+
+  const stats = useMemo(() => {
+    const total = frames.length;
+    const covered = frames.filter((frame) => frameCovered(frame, threshold));
+    const withExtras = frames.filter((frame) => frameExtras(frame) > 0).length;
+    const meanExtras = mean(frames.map(frameExtras));
+    return { total, covered: covered.length, withExtras, meanExtras };
+  }, [frames, threshold]);
+
+  // Most extras first so the frames that carry the junk masks come up top, and
+  // the weakest coverage first inside a tie.
+  const picked = useMemo(() => {
+    const kept = onlyExtras
+      ? frames.filter((frame) => frameExtras(frame) > 0)
+      : frames;
+    return [...kept].sort((a, b) => {
+      const byExtras = frameExtras(b) - frameExtras(a);
+      if (byExtras !== 0) return byExtras;
+      return (a.iou_min ?? 0) - (b.iou_min ?? 0);
+    });
+  }, [frames, onlyExtras]);
+  const gallery = picked.slice(0, GALLERY_CAP);
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-sm font-medium text-gray-700">top-k</span>
+        <Toggle
+          ariaLabel="top-k value"
+          value={k}
+          onChange={setKChoice}
+          options={ks.map((option) => ({ value: option, label: option }))}
+        />
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            className="h-4 w-4 accent-slate-700"
+            type="checkbox"
+            checked={onlyExtras}
+            onChange={(event) => setOnlyExtras(event.target.checked)}
+          />
+          only frames with extras
+        </label>
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <StatTile label="frames" value={String(stats.total)} />
+        <StatTile
+          label="frames covered"
+          value={String(stats.covered)}
+          note={
+            stats.total > 0 ? formatPercent(stats.covered / stats.total) : "n/a"
+          }
+        />
+        <StatTile
+          label="frames with extras"
+          value={String(stats.withExtras)}
+          note={
+            stats.total > 0
+              ? formatPercent(stats.withExtras / stats.total)
+              : "n/a"
+          }
+        />
+        <StatTile
+          label="mean extras per frame"
+          value={
+            stats.meanExtras === null ? "n/a" : stats.meanExtras.toFixed(2)
+          }
+          note={`k ${k}`}
+        />
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold text-gray-800">
+          {onlyExtras ? "Frames with extras" : "All frames"} at k {k}
+        </h2>
+        {picked.length === 0 ? (
+          <p className="text-gray-600">No frames to show at k {k}.</p>
+        ) : (
+          <>
+            <p className="text-sm text-gray-600">
+              showing {gallery.length} of {picked.length}
+            </p>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {gallery.map((frame, index) => (
+                <TopkCard
+                  key={frame.run ?? `frame-${index}`}
+                  frame={frame}
+                  threshold={threshold}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+};
+
 export const Sam3Page: FC = () => {
   const [threshold, setThreshold] = useState(THRESHOLD_DEFAULT);
   const [thresholdText, setThresholdText] = useState(
     THRESHOLD_DEFAULT.toFixed(2),
   );
   const [iouMode, setIouMode] = useState<IouMode>("plain");
-  const [nameMode, setNameMode] = useState<NameMode>("names");
+  const [modeChoice, setModeChoice] = useState<NameMode | null>(null);
   const [viewChoice, setViewChoice] = useState<ViewMode | null>(null);
 
   const { data, isPending, error } = useQuery({
@@ -643,19 +888,56 @@ export const Sam3Page: FC = () => {
   });
   const generic = genericQuery.data ?? null;
 
+  // The top-k run writes its own file; a missing file is not an error either.
+  const topkQuery = useQuery({
+    queryKey: ["sam3Topk"],
+    queryFn: getSam3Topk,
+    refetchInterval: REFETCH_MS,
+    retry: false,
+  });
+  const topk = topkQuery.data ?? null;
+
   const objects = useMemo(() => data?.objects ?? [], [data]);
+
+  // done is the longest per-k list, so the progress bar means the same thing
+  // in top-k mode as it does for the run files.
+  const topkCounts = useMemo(() => {
+    const lists = Object.values(topk?.by_k ?? {});
+    return {
+      any: lists.reduce((count, list) => count + (list?.length ?? 0), 0),
+      done: lists.reduce(
+        (count, list) => Math.max(count, list?.length ?? 0),
+        0,
+      ),
+    };
+  }, [topk]);
+
+  const hasRunData =
+    (data?.runs?.length ?? 0) > 0 || (generic?.runs?.length ?? 0) > 0;
+  const hasFrameData = hasRunData || topkCounts.any > 0;
+  // Top-k is the default data mode when it is the only frame-level file on the
+  // bucket, otherwise the named run leads as before.
+  const nameMode: NameMode =
+    modeChoice ?? (hasRunData || topkCounts.any === 0 ? "names" : "topk");
   const noNames = nameMode === "nonames";
+  const topkMode = nameMode === "topk";
   const frameData = noNames ? generic : (data ?? null);
   const runs = useMemo(() => frameData?.runs ?? [], [frameData]);
-  const hasFrameData =
-    (data?.runs?.length ?? 0) > 0 || (generic?.runs?.length ?? 0) > 0;
-  // The frame view is the default once the evaluation publishes the runs
-  // array; before that only the object view has anything to show.
-  const view: ViewMode = hasFrameData ? (viewChoice ?? "frames") : "objects";
+  // The frame view is the default once the evaluation publishes frame-level
+  // data; before that the object view leads, but either stays reachable.
+  const view: ViewMode = viewChoice ?? (hasFrameData ? "frames" : "objects");
 
-  const headerData = view === "frames" && frameData ? frameData : data;
-  const runsDone = headerData?.runs_done ?? 0;
-  const runsTotal = headerData?.runs_total ?? 0;
+  const headerData =
+    view === "frames" && !topkMode && frameData ? frameData : data;
+  const headerUpdated = topkMode ? topk?.updated : headerData?.updated;
+  const headerPrompt = topkMode
+    ? topk?.prompt
+    : noNames
+      ? frameData?.prompt
+      : undefined;
+  const runsDone = topkMode ? topkCounts.done : (headerData?.runs_done ?? 0);
+  const runsTotal = (topkMode ? topk?.runs_total : headerData?.runs_total) ?? 0;
+  const runsSkipped = topkMode ? undefined : headerData?.runs_skipped;
   const progress = runsTotal > 0 ? Math.min(1, runsDone / runsTotal) : 0;
 
   const applyThreshold = (raw: string) => {
@@ -702,16 +984,16 @@ export const Sam3Page: FC = () => {
         <div className="flex flex-col gap-6">
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm text-gray-600">
-              <span>updated {formatUpdated(headerData?.updated)}</span>
-              {view === "frames" && noNames && frameData?.prompt && (
+              <span>updated {formatUpdated(headerUpdated)}</span>
+              {view === "frames" && headerPrompt && (
                 <span className="font-mono break-all">
-                  prompt "{frameData.prompt}"
+                  prompt "{headerPrompt}"
                 </span>
               )}
               <span className="font-mono">
                 {runsDone} / {runsTotal} runs
-                {typeof headerData?.runs_skipped === "number"
-                  ? `, ${headerData.runs_skipped} skipped`
+                {typeof runsSkipped === "number"
+                  ? `, ${runsSkipped} skipped`
                   : ""}
               </span>
             </div>
@@ -723,41 +1005,42 @@ export const Sam3Page: FC = () => {
             </div>
           </div>
 
-          {hasFrameData ? (
-            <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Toggle
+              ariaLabel="view level"
+              value={view}
+              onChange={setViewChoice}
+              options={[
+                { value: "frames", label: "frames" },
+                { value: "objects", label: "objects" },
+              ]}
+            />
+            {view === "frames" && (
               <Toggle
-                ariaLabel="view level"
-                value={view}
-                onChange={setViewChoice}
+                ariaLabel="data mode"
+                value={nameMode}
+                onChange={setModeChoice}
                 options={[
-                  { value: "frames", label: "frames" },
-                  { value: "objects", label: "objects" },
+                  { value: "names", label: "names" },
+                  { value: "nonames", label: "no names" },
+                  { value: "topk", label: "top-k" },
                 ]}
               />
-              {view === "frames" && (
-                <Toggle
-                  ariaLabel="prompt source"
-                  value={nameMode}
-                  onChange={setNameMode}
-                  options={[
-                    { value: "names", label: "names" },
-                    { value: "nonames", label: "no names" },
-                  ]}
-                />
-              )}
-              {view === "frames" && (
-                <Toggle
-                  ariaLabel="iou source"
-                  value={iouMode}
-                  onChange={setIouMode}
-                  options={[
-                    { value: "plain", label: "plain" },
-                    { value: "merged", label: "merged" },
-                  ]}
-                />
-              )}
-            </div>
-          ) : (
+            )}
+            {view === "frames" && !topkMode && (
+              <Toggle
+                ariaLabel="iou source"
+                value={iouMode}
+                onChange={setIouMode}
+                options={[
+                  { value: "plain", label: "plain" },
+                  { value: "merged", label: "merged" },
+                ]}
+              />
+            )}
+          </div>
+
+          {!hasRunData && !topkMode && (
             <p className="text-sm text-gray-600">
               frame-level data not published yet
             </p>
@@ -795,7 +1078,15 @@ export const Sam3Page: FC = () => {
           </div>
 
           {view === "frames" ? (
-            noNames && !generic ? (
+            topkMode ? (
+              topk ? (
+                <TopkView topk={topk} threshold={threshold} />
+              ) : (
+                <p className="text-sm text-gray-600">
+                  top-k data not published yet
+                </p>
+              )
+            ) : noNames && !generic ? (
               <p className="text-sm text-gray-600">
                 no-names data not published yet
               </p>
