@@ -5,4 +5,5 @@ export interface VideoMetadata {
   prompt: string;
   pose: string;
   gripped: boolean;
+  feature?: string;
 }

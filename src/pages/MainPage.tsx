@@ -14,6 +14,11 @@ import { weeks } from "@/types/Week";
 import { status, type StatusType } from "@/types/Status";
 import { pose, type PoseType } from "@/types/Pose";
 import {
+  ALL_FEATURES,
+  featureLabel,
+  type FeatureType,
+} from "@/types/Feature";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -33,6 +38,9 @@ export interface MainPageProps {
   onStatusChange: (status: StatusType) => void;
   selectedPose: PoseType;
   onPoseChange: (pose: PoseType) => void;
+  features: FeatureType[];
+  selectedFeature: FeatureType;
+  onFeatureChange: (feature: FeatureType) => void;
   nameFilter: string;
   onNameFilterChange: (name: string) => void;
   showFilters: boolean;
@@ -48,6 +56,9 @@ export const MainPage: React.FC<MainPageProps> = ({
   onStatusChange,
   selectedPose,
   onPoseChange,
+  features,
+  selectedFeature,
+  onFeatureChange,
   nameFilter,
   onNameFilterChange,
   showFilters,
@@ -143,6 +154,24 @@ export const MainPage: React.FC<MainPageProps> = ({
                     {Object.entries(pose).map(([key, label]) => (
                       <SelectItem key={key} value={key}>
                         {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label className="ml-2">Feature</Label>
+                <Select
+                  defaultValue={selectedFeature ?? ALL_FEATURES}
+                  onValueChange={(value) => onFeatureChange(value as FeatureType)}
+                >
+                  <SelectTrigger className="w-32" aria-label="Select feature">
+                    <SelectValue placeholder="Select feature" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[ALL_FEATURES, ...features].map((feature) => (
+                      <SelectItem key={feature} value={feature}>
+                        {featureLabel(feature)}
                       </SelectItem>
                     ))}
                   </SelectContent>

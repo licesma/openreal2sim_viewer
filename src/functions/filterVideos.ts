@@ -3,6 +3,7 @@ import "@google/model-viewer";
 import type { VideoMetadata } from "@/types/VideoMetadata";
 import type { AuthorType } from "@/types/Author";
 import type { WeekType } from "@/types/Week";
+import { ALL_FEATURES } from "@/types/Feature";
 
 export function filterVideos(
     allMetadata: Record<string, VideoMetadata>,
@@ -10,6 +11,7 @@ export function filterVideos(
     selectedWeek: WeekType,
     selectedStatus: string,
     selectedPose: string,
+    selectedFeature: string = ALL_FEATURES,
     nameFilter: string = ""
 ) {
     const filteredByAuthor =
@@ -48,16 +50,25 @@ export function filterVideos(
             ) as Record<string, VideoMetadata>)
             : filteredByStatus;
 
+    const filteredByFeature =
+        selectedFeature !== ALL_FEATURES
+            ? (Object.fromEntries(
+                Object.entries(filteredByPose).filter(
+                    ([_name, meta]) => meta.feature == selectedFeature
+                )
+            ) as Record<string, VideoMetadata>)
+            : filteredByPose;
+
     const nameTerms = nameFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
 
     const filteredByName =
         nameTerms.length > 0
             ? (Object.fromEntries(
-                Object.entries(filteredByPose).filter(([name]) =>
+                Object.entries(filteredByFeature).filter(([name]) =>
                     nameTerms.some((term) => name.toLowerCase().includes(term))
                 )
             ) as Record<string, VideoMetadata>)
-            : filteredByPose;
+            : filteredByFeature;
 
     return filteredByName;
 }

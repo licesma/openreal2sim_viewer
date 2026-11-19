@@ -8,6 +8,7 @@ import { useMetadata } from "./hooks/useMetadata";
 import type { AuthorType } from "@/types/Author";
 import { type StatusType } from "@/types/Status";
 import { type PoseType } from "@/types/Pose";
+import { ALL_FEATURES, featureOptions, type FeatureType } from "@/types/Feature";
 import { Separator } from "@/components/ui/separator";
 import { ControlBar } from "@/components/ControlBar";
 import type { WeekType } from "@/types/Week";
@@ -20,15 +21,26 @@ function App() {
   const [selectedWeek, setSelectedWeek] = useState<WeekType>("all");
   const [selectedStatus, setSelectedStatus] = useState<StatusType>("all");
   const [selectedPose, setSelectedPose] = useState<PoseType>("all");
+  const [selectedFeature, setSelectedFeature] = useState<FeatureType>(ALL_FEATURES);
   const [nameFilter, setNameFilter] = useState("");
   const [showFilters, setShowFilters] = useState(false);
 
   const { data } = useMetadata();
 
+  const features = useMemo(() => (data ? featureOptions(data) : []), [data]);
+
   const filteredVideos = useMemo(() => {
     if (!data) return {};
-    return filterVideos(data, selectedAuthor, selectedWeek, selectedStatus, selectedPose, nameFilter);
-  }, [data, selectedAuthor, selectedWeek, selectedStatus, selectedPose, nameFilter]);
+    return filterVideos(
+      data,
+      selectedAuthor,
+      selectedWeek,
+      selectedStatus,
+      selectedPose,
+      selectedFeature,
+      nameFilter
+    );
+  }, [data, selectedAuthor, selectedWeek, selectedStatus, selectedPose, selectedFeature, nameFilter]);
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -52,6 +64,9 @@ function App() {
                   onStatusChange={(status: StatusType) => setSelectedStatus(status)}
                   selectedPose={selectedPose}
                   onPoseChange={(p: PoseType) => setSelectedPose(p)}
+                  features={features}
+                  selectedFeature={selectedFeature}
+                  onFeatureChange={(feature: FeatureType) => setSelectedFeature(feature)}
                   nameFilter={nameFilter}
                   onNameFilterChange={(name: string) => setNameFilter(name)}
                   showFilters={showFilters}
