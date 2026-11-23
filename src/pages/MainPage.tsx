@@ -5,6 +5,7 @@ import "@google/model-viewer";
 import UsersGrid from "@/components/UserGrid";
 import type { VideoMetadata } from "@/types/VideoMetadata";
 import { Tab } from "@/components/Tab";
+import CompareTab from "@/tabs/CompareTab";
 import { usePrefetchGlb } from "@/hooks/useGlb";
 import { useMetadata } from "@/hooks/useMetadata";
 import type { AuthorType } from "@/types/Author";
@@ -14,6 +15,7 @@ import { weeks } from "@/types/Week";
 import { status, type StatusType } from "@/types/Status";
 import { pose, type PoseType } from "@/types/Pose";
 import {
+  AGENT_COMPARE,
   ALL_FEATURES,
   featureLabel,
   type FeatureType,
@@ -193,19 +195,23 @@ export const MainPage: React.FC<MainPageProps> = ({
         </div>
       </div>
       <div className="grid">
-        <Tab
-          selectedVideo={selectedVideo}
-          metadata={metadata}
-          onNextVideo={() => {
-            if (!selectedVideo) return;
-            const idx = orderedVideos.indexOf(selectedVideo);
-            if (idx === -1) return;
-            const hasNext = idx + 1 < orderedVideos.length;
-            if (hasNext) {
-              onSelectVideo(orderedVideos[idx + 1]);
-            }
-          }}
-        />
+        {selectedFeature === AGENT_COMPARE ? (
+          <CompareTab selectedVideo={selectedVideo} />
+        ) : (
+          <Tab
+            selectedVideo={selectedVideo}
+            metadata={metadata}
+            onNextVideo={() => {
+              if (!selectedVideo) return;
+              const idx = orderedVideos.indexOf(selectedVideo);
+              if (idx === -1) return;
+              const hasNext = idx + 1 < orderedVideos.length;
+              if (hasNext) {
+                onSelectVideo(orderedVideos[idx + 1]);
+              }
+            }}
+          />
+        )}
       </div>
     </div>
   );

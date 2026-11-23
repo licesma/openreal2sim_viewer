@@ -3,7 +3,8 @@ import "@google/model-viewer";
 import type { VideoMetadata } from "@/types/VideoMetadata";
 import type { AuthorType } from "@/types/Author";
 import type { WeekType } from "@/types/Week";
-import { ALL_FEATURES } from "@/types/Feature";
+import { AGENT_COMPARE, ALL_FEATURES } from "@/types/Feature";
+import { COMPARE_RUNS } from "@/constants";
 
 export function filterVideos(
     allMetadata: Record<string, VideoMetadata>,
@@ -50,14 +51,22 @@ export function filterVideos(
             ) as Record<string, VideoMetadata>)
             : filteredByStatus;
 
+    const compareRuns = new Set(COMPARE_RUNS.map((entry) => entry.run));
+
     const filteredByFeature =
-        selectedFeature !== ALL_FEATURES
+        selectedFeature === AGENT_COMPARE
             ? (Object.fromEntries(
-                Object.entries(filteredByPose).filter(
-                    ([_name, meta]) => meta.feature == selectedFeature
+                Object.entries(filteredByPose).filter(([name]) =>
+                    compareRuns.has(name)
                 )
             ) as Record<string, VideoMetadata>)
-            : filteredByPose;
+            : selectedFeature !== ALL_FEATURES
+                ? (Object.fromEntries(
+                    Object.entries(filteredByPose).filter(
+                        ([_name, meta]) => meta.feature == selectedFeature
+                    )
+                ) as Record<string, VideoMetadata>)
+                : filteredByPose;
 
     const nameTerms = nameFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
 

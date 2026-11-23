@@ -1,5 +1,9 @@
 export const ALL_FEATURES = "all";
 
+// Not a metadata value: it selects the runs of the agent vs pipeline
+// experiment and shows both reconstructions side by side.
+export const AGENT_COMPARE = "Agent vs pipeline";
+
 export type FeatureType = string;
 
 export function featureLabel(feature: FeatureType): string {
@@ -17,5 +21,6 @@ export function featureOptions(
       found.add(feature);
     }
   }
+  found.add(AGENT_COMPARE);
   return [...found].sort((a, b) => a.localeCompare(b));
 }
