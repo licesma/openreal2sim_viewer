@@ -29,6 +29,9 @@ export const COMPARE_RUNS: CompareRun[] = [
   },
   // Its scene.glb already has a scene_zup root node, so no orientation here.
   { run: "scene_00597", pipelinePrefix: "week_6/divleen" },
-  // Agent scene not uploaded yet; its up axis still has to be checked.
-  { run: "video_00941", pipelinePrefix: "week_10/junsoo" },
+  {
+    run: "video_00941",
+    pipelinePrefix: "week_10/junsoo",
+    agentOrientation: ZUP_ORIENTATION,
+  },
 ];
